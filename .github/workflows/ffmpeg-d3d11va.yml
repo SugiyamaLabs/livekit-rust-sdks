@@ -1,0 +1,39 @@
+# Minimal FFmpeg for Windows x64 (LGPL, shared): only the H.264 decoder with the
+# D3D11VA hwaccel, for the hardware decoder in webrtc-sys (src/ffmpeg_d3d11va).
+name: ffmpeg-d3d11va
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/ffmpeg-d3d11va.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nasm
+      - name: Source
+        run: git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
+      - name: Configure
+        working-directory: ffmpeg
+        run: |
+          ./configure --prefix=$GITHUB_WORKSPACE/out \
+            --target-os=mingw32 --arch=x86_64 --cross-prefix=x86_64-w64-mingw32- \
+            --enable-shared --disable-static --disable-programs --disable-doc \
+            --disable-everything --disable-autodetect --disable-network \
+            --disable-avformat --disable-avdevice --disable-avfilter \
+            --disable-swscale --disable-swresample \
+            --enable-decoder=h264 --enable-parser=h264 \
+            --enable-d3d11va --enable-hwaccel=h264_d3d11va \
+            --extra-ldflags="-static-libgcc"
+      - name: Build
+        working-directory: ffmpeg
+        run: make -j"$(nproc)" install
+      - name: Check
+        run: ls -la out/bin out/include
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-d3d11va-win64
+          path: out
