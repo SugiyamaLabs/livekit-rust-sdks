@@ -21,6 +21,8 @@
 #endif
 #include <windows.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -45,6 +47,22 @@ extern "C" {
 namespace livekit_ffi {
 
 namespace {
+
+// LK_D3D11VA_LOG=<file>: plain-text trace (loading, device, chosen format).
+void Trace(const char* fmt, ...) {
+  char path[260];
+  if (GetEnvironmentVariableA("LK_D3D11VA_LOG", path, sizeof(path)) == 0)
+    return;
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "a") != 0 || !f)
+    return;
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(f, fmt, args);
+  va_end(args);
+  fputc('\n', f);
+  fclose(f);
+}
 
 // The FFmpeg entry points used here, resolved from avcodec-61.dll /
 // avutil-59.dll (FFmpeg 7.1) next to livekit_ffi.dll. Nothing is linked, so
@@ -94,6 +112,7 @@ Ff* Api() {
       return nullptr;
     HMODULE util = LoadNextToUs(L"avutil-59.dll");
     HMODULE codec = util ? LoadNextToUs(L"avcodec-61.dll") : nullptr;
+    Trace("load: avutil %p, avcodec %p (error %lu)", (void*)util, (void*)codec, GetLastError());
     if (!codec) {
       RTC_LOG(LS_INFO) << "D3D11VA: FFmpeg DLLs not found next to livekit_ffi.dll";
       return nullptr;
@@ -117,7 +136,9 @@ Ff* Api() {
       RTC_LOG(LS_WARNING) << "D3D11VA: FFmpeg DLLs missing an entry point";
       return nullptr;
     }
-    if (f.device_create(&f.device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) < 0) {
+    const int created = f.device_create(&f.device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
+    Trace("entry points %d, device_create %d", ok ? 1 : 0, created);
+    if (created < 0) {
       RTC_LOG(LS_INFO) << "D3D11VA: no D3D11 video device";
       return nullptr;
     }
@@ -128,9 +149,12 @@ Ff* Api() {
 
 AVPixelFormat PickD3d11(AVCodecContext*, const AVPixelFormat* formats) {
   for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; f++) {
-    if (*f == AV_PIX_FMT_D3D11)
+    if (*f == AV_PIX_FMT_D3D11) {
+      Trace("get_format: D3D11");
       return *f;
+    }
   }
+  Trace("get_format: no D3D11 offered, first is %d", formats[0]);
   // No D3D11VA profile for this stream: decode in software inside FFmpeg; the
   // output path below handles YUV420P too.
   return formats[0];
@@ -170,7 +194,9 @@ bool D3d11vaH264Decoder::Configure(const Settings& settings) {
   context_->get_format = PickD3d11;
   context_->thread_count = 1;  // the GPU decodes; no CPU slice threads
   context_->flags |= AV_CODEC_FLAG_LOW_DELAY;
-  if (ff->open(context_, codec, nullptr) < 0) {
+  const int opened = ff->open(context_, codec, nullptr);
+  Trace("configure: open %d", opened);
+  if (opened < 0) {
     RTC_LOG(LS_WARNING) << "D3D11VA: avcodec_open2 failed";
     Release();
     return false;
@@ -235,6 +261,10 @@ int32_t D3d11vaH264Decoder::Decode(const webrtc::EncodedImage& input_image,
       RTC_LOG(LS_WARNING) << "D3D11VA: receive_frame failed, " << ret;
       return WEBRTC_VIDEO_CODEC_ERROR;
     }
+    if (traced_frames_ < 3) {
+      Trace("frame %d: format %d, %dx%d", traced_frames_, frame_->format, frame_->width, frame_->height);
+      traced_frames_++;
+    }
     if (frame_->format == AV_PIX_FMT_D3D11) {
       // GPU surface → NV12 in memory (FFmpeg keeps one staging texture).
       if (ff->transfer(download_, frame_, 0) >= 0) {
@@ -280,6 +310,7 @@ void D3d11vaH264Decoder::Deliver(AVFrame* frame, const webrtc::EncodedImage& inp
 
 bool D3d11vaVideoDecoderFactory::IsSupported() {
   static bool supported = D3d11vaH264Decoder::IsAvailable();
+  Trace("factory: supported %d", supported ? 1 : 0);
   return supported;
 }
 
