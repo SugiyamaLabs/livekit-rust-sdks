@@ -43,6 +43,10 @@
 #include "mf/mf_decoder_factory.h"
 #endif
 
+#if defined(USE_AMF_VIDEO_DECODER)
+#include "amd/amf_decoder_factory.h"
+#endif
+
 namespace livekit_ffi {
 
 namespace {
@@ -86,6 +90,13 @@ VideoDecoderFactory::VideoDecoderFactory()
 #if defined(USE_NVIDIA_VIDEO_CODEC) || defined(USE_NVIDIA_VIDEO_DECODER)
   if (webrtc::NvidiaVideoDecoderFactory::IsSupported()) {
     factories_.push_back(std::make_unique<webrtc::NvidiaVideoDecoderFactory>());
+  }
+#endif
+
+#if defined(USE_AMF_VIDEO_DECODER)
+  // Windows, AMD GPUs: H.264 through AMF (amfrt64.dll from the driver).
+  if (AmfVideoDecoderFactory::IsSupported()) {
+    factories_.push_back(std::make_unique<AmfVideoDecoderFactory>());
   }
 #endif
 

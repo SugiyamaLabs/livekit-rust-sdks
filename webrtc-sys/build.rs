@@ -201,6 +201,11 @@ fn main() {
                 .file("src/mf/mf_h264_decoder.cpp")
                 .file("src/mf/mf_decoder_factory.cpp")
                 .define("USE_MF_VIDEO_DECODER", "1")
+                // AMD hardware decoding (AMF headers vendored in src/amd/AMF, MIT).
+                .include("src/amd")
+                .file("src/amd/amf_h264_decoder.cpp")
+                .file("src/amd/amf_decoder_factory.cpp")
+                .define("USE_AMF_VIDEO_DECODER", "1")
                 //.include("./vaapi-windows/DirectX-Headers-1.0/include")
                 //.include(path::PathBuf::from("./vaapi-windows/x64/include"))
                 //.file("vaapi-windows/DirectX-Headers-1.0/src/dxguids.cpp")
