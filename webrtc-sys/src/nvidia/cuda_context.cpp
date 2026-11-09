@@ -35,6 +35,10 @@ namespace livekit_ffi {
   } while (0)
 
 static void* s_module_ptr = nullptr;
+// Waits for the GPU (frame map/copy after each decode) sleep instead of spin:
+// with the default (AUTO) a machine with many cores spins, and the decoder
+// thread burned as much CPU as FFmpeg decoding in software.
+static const unsigned int kContextFlags = CU_CTX_SCHED_BLOCKING_SYNC;
 static const int kRequiredDriverVersion = 11000;
 
 // Serializes access to the singleton context, its reference count, and the
@@ -167,9 +171,9 @@ bool CudaContext::Initialize() {
   RTC_LOG(LS_INFO) << "CUDA device name: " << device_name;
 
 #if CUDA_VERSION >= 13000
-  CUCTX_CUDA_CALL_ERROR(cuCtxCreate(&context, nullptr, 0, cu_device));
+  CUCTX_CUDA_CALL_ERROR(cuCtxCreate(&context, nullptr, kContextFlags, cu_device));
 #else
-  CUCTX_CUDA_CALL_ERROR(cuCtxCreate(&context, 0, cu_device));
+  CUCTX_CUDA_CALL_ERROR(cuCtxCreate(&context, kContextFlags, cu_device));
 #endif
   if (context == nullptr) {
     RTC_LOG(LS_ERROR) << "Failed to create CUDA context.";
