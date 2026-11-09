@@ -54,6 +54,7 @@ class SizeSwitchingH264Decoder : public VideoDecoder {
   std::unique_ptr<NvidiaH264DecoderImpl> hardware_;
   VideoDecoder* current_ = nullptr;
   bool cuda_held_ = false;
+  bool session_held_ = false;
   bool hardware_failed_ = false;
   Settings settings_;
   DecodedImageCallback* callback_ = nullptr;

@@ -53,6 +53,14 @@ static bool load_cuda_modules() {
     return true;
 
 #if defined(_WIN32)
+  // Load CUDA kernel modules on first use instead of all at cuInit: NVDEC
+  // needs almost none, and eager loading adds to the context's host memory.
+  // Runs before every cuInit here; respects a value the user already set.
+  if (GetEnvironmentVariableA("CUDA_MODULE_LOADING", nullptr, 0) == 0)
+    SetEnvironmentVariableA("CUDA_MODULE_LOADING", "LAZY");
+#endif
+
+#if defined(_WIN32)
   // dll delay load
   HMODULE module = LoadLibrary(TEXT("nvcuda.dll"));
   if (!module) {

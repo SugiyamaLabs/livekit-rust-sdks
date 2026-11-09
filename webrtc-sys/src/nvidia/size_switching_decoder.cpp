@@ -21,7 +21,16 @@
 #include "modules/video_coding/include/video_error_codes.h"
 #include "rtc_base/logging.h"
 
+#include <atomic>
+
 namespace webrtc {
+
+namespace {
+// NVDEC sessions alive in the process. One at a time: the CUDA context alone
+// is ~55 MB of host memory, a second large stream stays on FFmpeg.
+std::atomic<int> g_sessions{0};
+constexpr int kMaxSessions = 1;
+}  // namespace
 
 SizeSwitchingH264Decoder::SizeSwitchingH264Decoder(const Environment& /*env*/)
     : software_(H264Decoder::Create()) {}
@@ -52,9 +61,16 @@ bool SizeSwitchingH264Decoder::UseHardware() {
     return true;
   if (hardware_failed_)
     return false;
+  if (g_sessions.fetch_add(1) >= kMaxSessions) {
+    g_sessions.fetch_sub(1);
+    return false;  // another large stream already has NVDEC
+  }
+  session_held_ = true;
   auto* cuda = livekit_ffi::CudaContext::GetInstance();
   if (!cuda->Initialize()) {
     hardware_failed_ = true;
+    g_sessions.fetch_sub(1);
+    session_held_ = false;
     return false;
   }
   cuda_held_ = true;
@@ -76,6 +92,10 @@ void SizeSwitchingH264Decoder::DropHardware() {
   if (cuda_held_) {
     livekit_ffi::CudaContext::GetInstance()->Shutdown();
     cuda_held_ = false;
+  }
+  if (session_held_) {
+    g_sessions.fetch_sub(1);
+    session_held_ = false;
   }
 }
 
