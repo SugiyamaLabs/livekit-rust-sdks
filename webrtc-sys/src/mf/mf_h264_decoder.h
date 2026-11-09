@@ -68,6 +68,10 @@ class MfH264Decoder : public webrtc::VideoDecoder {
   // Coded size (rows of the NV12 surface, e.g. 1088) and the visible size.
   UINT32 coded_width_ = 0, coded_height_ = 0;
   UINT32 width_ = 0, height_ = 0;
+  // Size from the receiver settings, given to the MFT up front (some drivers
+  // only take the DXVA path once they know the resolution).
+  UINT32 hint_width_ = 0, hint_height_ = 0;
+  int delivered_ = 0;
   webrtc::DecodedImageCallback* callback_ = nullptr;
   webrtc::VideoFrameBufferPool buffer_pool_;
 };

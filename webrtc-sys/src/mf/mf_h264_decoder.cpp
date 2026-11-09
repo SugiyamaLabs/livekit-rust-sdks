@@ -21,6 +21,8 @@
 #include <mferror.h>
 #include <wmcodecdsp.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 
 #include "api/video/i420_buffer.h"
@@ -38,6 +40,28 @@ namespace {
 // CODECAPI_AVLowLatencyMode, spelled out so no extra GUID library is needed.
 constexpr GUID kLowLatencyMode = {
     0x9c27891a, 0xed7a, 0x40e1, {0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee}};
+
+// CODECAPI_AVDecVideoAcceleration_H264: lets the MFT use DXVA (on by default
+// on most systems, set explicitly so a policy/registry default does not win).
+constexpr GUID kH264Acceleration = {
+    0xf7db8a2f, 0x4f48, 0x4ee8, {0xae, 0x31, 0x8b, 0x6e, 0xbe, 0x55, 0x8a, 0xe2}};
+
+// LK_MFDEC_LOG=<file>: plain-text trace of the decoder setup and of the first
+// frames (whether DXVA is on, whether output samples are GPU surfaces).
+void Trace(const char* fmt, ...) {
+  char path[260];
+  if (GetEnvironmentVariableA("LK_MFDEC_LOG", path, sizeof(path)) == 0)
+    return;
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "a") != 0 || !f)
+    return;
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(f, fmt, args);
+  va_end(args);
+  fputc('\n', f);
+  fclose(f);
+}
 
 // WebRTC calls Configure and Decode from its own threads: COM must be up on
 // each one. RPC_E_CHANGED_MODE (already STA) is fine for an in-proc MFT.
@@ -114,12 +138,17 @@ bool MfH264Decoder::Init() {
     VariantInit(&v);
     v.vt = VT_UI4;
     v.ulVal = 1;
-    codec_api->SetValue(&kLowLatencyMode, &v);
+    HRESULT low = codec_api->SetValue(&kLowLatencyMode, &v);
+    HRESULT accel = codec_api->SetValue(&kH264Acceleration, &v);
+    Trace("init: low latency hr=0x%08lx, h264 acceleration hr=0x%08lx", low, accel);
+  } else {
+    Trace("init: no ICodecAPI");
   }
   // Without DXVA (no GPU decoder for H.264) this fails: the software MFT would
   // not beat FFmpeg by much, so the factory falls back instead.
   hr = mft_->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER,
                             reinterpret_cast<ULONG_PTR>(manager_.Get()));
+  Trace("init: SET_D3D_MANAGER hr=0x%08lx", hr);
   if (FAILED(hr)) {
     RTC_LOG(LS_WARNING) << "MF decoder: DXVA refused, hr=" << hr;
     return false;
@@ -130,6 +159,8 @@ bool MfH264Decoder::Init() {
   in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
   in->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
   in->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+  if (hint_width_ > 0 && hint_height_ > 0)
+    MFSetAttributeSize(in.Get(), MF_MT_FRAME_SIZE, hint_width_, hint_height_);
   hr = mft_->SetInputType(0, in.Get(), 0);
   if (FAILED(hr)) {
     RTC_LOG(LS_WARNING) << "MF decoder: SetInputType failed, hr=" << hr;
@@ -168,6 +199,8 @@ bool MfH264Decoder::SetOutputNv12() {
     provides_samples_ = (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES |
                                          MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
     output_size_ = info.cbSize;
+    Trace("output NV12: coded %ux%u, visible %ux%u, provides samples %d, flags 0x%lx", coded_width_,
+          coded_height_, width_, height_, provides_samples_ ? 1 : 0, info.dwFlags);
     return true;
   }
   // Before the first SPS the MFT may not offer NV12 yet; the stream change
@@ -178,6 +211,10 @@ bool MfH264Decoder::SetOutputNv12() {
 bool MfH264Decoder::Configure(const Settings& settings) {
   if (settings.codec_type() != webrtc::kVideoCodecH264)
     return false;
+  if (settings.max_render_resolution().Valid()) {
+    hint_width_ = static_cast<UINT32>(settings.max_render_resolution().Width());
+    hint_height_ = static_cast<UINT32>(settings.max_render_resolution().Height());
+  }
   if (mft_)
     return true;
   return Init();
@@ -281,6 +318,13 @@ void MfH264Decoder::Deliver(IMFSample* sample, const webrtc::EncodedImage& input
   ComPtr<IMFMediaBuffer> buffer;
   if (FAILED(sample->GetBufferByIndex(0, &buffer)))
     return;
+
+  if (delivered_ < 3) {
+    ComPtr<IMFDXGIBuffer> dxgi;
+    Trace("frame %d: %ux%u, GPU surface %d", delivered_, width_, height_,
+          SUCCEEDED(buffer.As(&dxgi)) ? 1 : 0);
+  }
+  delivered_++;
 
   // On a DXGI buffer Lock2D reads the GPU surface back to memory.
   BYTE* data = nullptr;
