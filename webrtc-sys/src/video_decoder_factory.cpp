@@ -35,6 +35,10 @@
 #include "livekit/android.h"
 #endif
 
+#if defined(USE_D3D11VA_VIDEO_DECODER)
+#include "ffmpeg_d3d11va/d3d11va_h264_decoder.h"
+#endif
+
 #if defined(USE_NVIDIA_VIDEO_CODEC) || defined(USE_NVIDIA_VIDEO_DECODER)
 #include "nvidia/nvidia_decoder_factory.h"
 #endif
@@ -85,6 +89,14 @@ VideoDecoderFactory::VideoDecoderFactory()
 
 #ifdef WEBRTC_ANDROID
   factories_.push_back(CreateAndroidVideoDecoderFactory());
+#endif
+
+#if defined(USE_D3D11VA_VIDEO_DECODER)
+  // Windows, any GPU: H.264 through D3D11VA (FFmpeg DLLs next to us). First in
+  // line: no CUDA context, so it costs far less memory than NVDEC.
+  if (D3d11vaVideoDecoderFactory::IsSupported()) {
+    factories_.push_back(std::make_unique<D3d11vaVideoDecoderFactory>());
+  }
 #endif
 
 #if defined(USE_NVIDIA_VIDEO_CODEC) || defined(USE_NVIDIA_VIDEO_DECODER)

@@ -155,6 +155,19 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=mfplat");
             println!("cargo:rustc-link-lib=dylib=mfuuid");
 
+            // D3D11VA hardware decoding through a minimal FFmpeg (avcodec/avutil
+            // DLLs loaded at runtime, nothing linked). Needs its headers at build
+            // time: FFMPEG_D3D11VA_HOME (the ffmpeg-d3d11va CI artifact).
+            match env::var("FFMPEG_D3D11VA_HOME") {
+                Ok(home) if Path::new(&home).join("include/libavcodec/avcodec.h").exists() => {
+                    builder
+                        .include(Path::new(&home).join("include"))
+                        .file("src/ffmpeg_d3d11va/d3d11va_h264_decoder.cpp")
+                        .define("USE_D3D11VA_VIDEO_DECODER", "1");
+                }
+                _ => println!("cargo:warning=FFMPEG_D3D11VA_HOME not set; building without D3D11VA"),
+            }
+
             // NVDEC (NVIDIA hardware decoding), decoder only. Building needs just
             // cuda.h (CUDA_HOME, e.g. the cuda_cudart redist archive); the import
             // libraries come from src/nvidia/win/*.def, and nvcuda.dll/nvcuvid.dll
