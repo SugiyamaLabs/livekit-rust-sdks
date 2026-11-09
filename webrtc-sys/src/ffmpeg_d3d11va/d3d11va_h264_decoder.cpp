@@ -32,6 +32,7 @@ extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavutil/frame.h"
 #include "libavutil/hwcontext.h"
+#include "libavutil/log.h"
 }
 
 #include "api/video/i420_buffer.h"
@@ -82,6 +83,8 @@ struct Ff {
   decltype(&av_hwframe_transfer_data) transfer;
   decltype(&av_hwdevice_ctx_create) device_create;
   decltype(&av_buffer_ref) buffer_ref;
+  decltype(&av_log_set_callback) log_set_callback;
+  decltype(&av_log_set_level) log_set_level;
   // One D3D11VA device shared by every decoder.
   AVBufferRef* device = nullptr;
 };
@@ -131,11 +134,22 @@ Ff* Api() {
               Resolve(util, "av_frame_unref", f.frame_unref) &&
               Resolve(util, "av_hwframe_transfer_data", f.transfer) &&
               Resolve(util, "av_hwdevice_ctx_create", f.device_create) &&
-              Resolve(util, "av_buffer_ref", f.buffer_ref);
+              Resolve(util, "av_buffer_ref", f.buffer_ref) &&
+              Resolve(util, "av_log_set_callback", f.log_set_callback) &&
+              Resolve(util, "av_log_set_level", f.log_set_level);
     if (!ok) {
       RTC_LOG(LS_WARNING) << "D3D11VA: FFmpeg DLLs missing an entry point";
       return nullptr;
     }
+    // FFmpeg's own messages go to the same trace (and nowhere else).
+    f.log_set_level(AV_LOG_WARNING);
+    f.log_set_callback([](void*, int level, const char* format, va_list args) {
+      if (level > AV_LOG_WARNING)
+        return;
+      char line[512];
+      vsnprintf(line, sizeof(line), format, args);
+      Trace("ffmpeg[%d]: %s", level, line);
+    });
     const int created = f.device_create(&f.device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
     Trace("entry points %d, device_create %d", ok ? 1 : 0, created);
     if (created < 0) {
@@ -251,6 +265,7 @@ int32_t D3d11vaH264Decoder::Decode(const webrtc::EncodedImage& input_image,
   packet_->size = 0;
   if (ret < 0 && ret != AVERROR(EAGAIN)) {
     RTC_LOG(LS_WARNING) << "D3D11VA: send_packet failed, " << ret;
+    Trace("send_packet %d (size %zu)", ret, input_image.size());
     return WEBRTC_VIDEO_CODEC_ERROR;  // asks for a keyframe
   }
   for (;;) {
@@ -259,6 +274,7 @@ int32_t D3d11vaH264Decoder::Decode(const webrtc::EncodedImage& input_image,
       break;
     if (ret < 0) {
       RTC_LOG(LS_WARNING) << "D3D11VA: receive_frame failed, " << ret;
+      Trace("receive_frame %d", ret);
       return WEBRTC_VIDEO_CODEC_ERROR;
     }
     if (traced_frames_ < 3) {
