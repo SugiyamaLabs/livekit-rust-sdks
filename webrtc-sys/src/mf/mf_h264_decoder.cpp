@@ -131,14 +131,19 @@ bool MfH264Decoder::Init() {
     RTC_LOG(LS_WARNING) << "MF decoder: MFT is not D3D11 aware";
     return false;
   }
-  attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
+  // Experiment switch: LK_MFDEC_NO_LOWLATENCY=1 leaves the MFT in its default
+  // (buffered) mode, to compare CPU use against low-latency mode.
+  char no_low[4];
+  const bool low_latency = GetEnvironmentVariableA("LK_MFDEC_NO_LOWLATENCY", no_low, sizeof(no_low)) == 0;
+  if (low_latency)
+    attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
   ComPtr<ICodecAPI> codec_api;
   if (SUCCEEDED(mft_.As(&codec_api))) {
     VARIANT v;
     VariantInit(&v);
     v.vt = VT_UI4;
     v.ulVal = 1;
-    HRESULT low = codec_api->SetValue(&kLowLatencyMode, &v);
+    HRESULT low = low_latency ? codec_api->SetValue(&kLowLatencyMode, &v) : S_FALSE;
     HRESULT accel = codec_api->SetValue(&kH264Acceleration, &v);
     Trace("init: low latency hr=0x%08lx, h264 acceleration hr=0x%08lx", low, accel);
   } else {
