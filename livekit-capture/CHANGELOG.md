@@ -1,3 +1,9 @@
+## 0.1.10 (2026-11-09)
+
+### Fixes
+
+- Log libwebrtc messages at their own severity instead of reporting every one as debug, so its warnings and errors are no longer filtered out by default in every SDK.
+
 ## 0.1.9 (2026-11-04)
 
 ### Fixes

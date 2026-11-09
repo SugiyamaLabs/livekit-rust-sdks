@@ -257,6 +257,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - bump libwebrtc to m125
+## 0.10.2 (2026-11-09)
+
+### Fixes
+
+- Log libwebrtc messages at their own severity instead of reporting every one as debug, so its warnings and errors are no longer filtered out by default in every SDK.
+
 ## 0.10.1 (2026-11-04)
 
 ### Fixes
