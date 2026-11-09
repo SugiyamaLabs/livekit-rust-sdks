@@ -142,9 +142,9 @@ Ff* Api() {
       return nullptr;
     }
     // FFmpeg's own messages go to the same trace (and nowhere else).
-    f.log_set_level(AV_LOG_VERBOSE);
+    f.log_set_level(AV_LOG_WARNING);
     f.log_set_callback([](void*, int level, const char* format, va_list args) {
-      if (level > AV_LOG_VERBOSE)
+      if (level > AV_LOG_WARNING)
         return;
       char line[512];
       vsnprintf(line, sizeof(line), format, args);
@@ -208,6 +208,10 @@ bool D3d11vaH264Decoder::Configure(const Settings& settings) {
   context_->get_format = PickD3d11;
   context_->thread_count = 1;  // the GPU decodes; no CPU slice threads
   context_->flags |= AV_CODEC_FLAG_LOW_DELAY;
+  // WebRTC encoders often mark streams plain Baseline (not Constrained), which
+  // D3D11VA has no profile for; they never use FMO/ASO, so decode as Main
+  // (what Chrome does).
+  context_->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
   const int opened = ff->open(context_, codec, nullptr);
   Trace("configure: open %d", opened);
   if (opened < 0) {
