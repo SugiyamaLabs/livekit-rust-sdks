@@ -186,6 +186,7 @@ fn main() {
                         .file("src/nvidia/h264_decoder_impl.cpp")
                         .file("src/nvidia/h265_decoder_impl.cpp")
                         .file("src/nvidia/nvidia_decoder_factory.cpp")
+                        .file("src/nvidia/size_switching_decoder.cpp")
                         .file("src/nvidia/cuda_context.cpp")
                         .define("USE_NVIDIA_VIDEO_DECODER", "1");
                 }

@@ -18,6 +18,9 @@
 #include "h264_decoder_impl.h"
 #include "h265_decoder_impl.h"
 #include "rtc_base/logging.h"
+#if defined(_WIN32)
+#include "size_switching_decoder.h"
+#endif
 
 namespace webrtc {
 
@@ -137,6 +140,17 @@ NvidiaVideoDecoderFactory::NvidiaVideoDecoderFactory()
     return;
   }
 
+#if defined(_WIN32)
+  // CUDA is initialized lazily, by the first stream large enough to use NVDEC
+  // (SizeSwitchingH264Decoder): a call with only thumbnails never loads it.
+  for (auto profile : {webrtc::H264Profile::kProfileConstrainedBaseline, webrtc::H264Profile::kProfileBaseline,
+                       webrtc::H264Profile::kProfileHigh, webrtc::H264Profile::kProfileMain}) {
+    auto format = CreateH264Format(profile, webrtc::H264Level::kLevel5_1, "1");
+    format.parameters.emplace(kSdpKeyNameCodecImpl, kCodecName);
+    supported_formats_.push_back(format);
+  }
+  return;
+#endif
   cu_context_ = livekit_ffi::CudaContext::GetInstance();
   if (cu_context_->Initialize()) {
     supported_formats_ = SupportedNvDecoderCodecs(cu_context_->GetContext());
@@ -165,10 +179,19 @@ bool NvidiaVideoDecoderFactory::IsSupported() {
     return false;
   }
 
+#if defined(_WIN32)
+  // Only check that the driver libraries exist; cuInit waits for a large stream.
+  if (HMODULE cuda = LoadLibraryA("nvcuda.dll")) {
+    FreeLibrary(cuda);
+  } else {
+    return false;
+  }
+#else
   if (!livekit_ffi::CudaContext::IsAvailable()) {
     RTC_LOG(LS_WARNING) << "Cuda Context is not available.";
     return false;
   }
+#endif
 
   if (!IsNvdecRuntimeAvailable()) {
     return false;
@@ -181,6 +204,13 @@ bool NvidiaVideoDecoderFactory::IsSupported() {
 std::unique_ptr<VideoDecoder> NvidiaVideoDecoderFactory::Create(
     const Environment& env,
     const SdpVideoFormat& format) {
+#if defined(_WIN32)
+  for (const auto& supported_format : supported_formats_) {
+    if (format.IsSameCodec(supported_format) && format.name == "H264")
+      return std::make_unique<SizeSwitchingH264Decoder>(env);
+  }
+  return nullptr;
+#endif
   // Check if the requested format is supported.
   for (const auto& supported_format : supported_formats_) {
     if (format.IsSameCodec(supported_format)) {
