@@ -155,6 +155,43 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=mfplat");
             println!("cargo:rustc-link-lib=dylib=mfuuid");
 
+            // NVDEC (NVIDIA hardware decoding), decoder only. Building needs just
+            // cuda.h (CUDA_HOME, e.g. the cuda_cudart redist archive); the import
+            // libraries come from src/nvidia/win/*.def, and nvcuda.dll/nvcuvid.dll
+            // ship with the driver and are delay-loaded by livekit-ffi.
+            match env::var("CUDA_HOME") {
+                Ok(cuda_home) if Path::new(&cuda_home).join("include/cuda.h").exists() => {
+                    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+                    let target = env::var("TARGET").unwrap();
+                    for name in ["nvcuda", "nvcuvid"] {
+                        let mut lib = cc::windows_registry::find(&target, "lib.exe")
+                            .expect("lib.exe not found");
+                        let status = lib
+                            .arg("/nologo")
+                            .arg("/machine:x64")
+                            .arg(format!("/def:src/nvidia/win/{name}.def"))
+                            .arg(format!("/out:{}", out.join(format!("{name}.lib")).display()))
+                            .status()
+                            .expect("failed to run lib.exe");
+                        assert!(status.success(), "lib.exe failed for {name}.def");
+                        println!("cargo:rustc-link-lib=dylib={name}");
+                    }
+                    println!("cargo:rustc-link-search=native={}", out.display());
+                    println!("cargo:rerun-if-changed=src/nvidia/win");
+                    builder
+                        .include(Path::new(&cuda_home).join("include"))
+                        .include("src/nvidia/NvCodec/include")
+                        .include("src/nvidia/NvCodec/NvCodec")
+                        .file("src/nvidia/NvCodec/NvCodec/NvDecoder/NvDecoder.cpp")
+                        .file("src/nvidia/h264_decoder_impl.cpp")
+                        .file("src/nvidia/h265_decoder_impl.cpp")
+                        .file("src/nvidia/nvidia_decoder_factory.cpp")
+                        .file("src/nvidia/cuda_context.cpp")
+                        .define("USE_NVIDIA_VIDEO_DECODER", "1");
+                }
+                _ => println!("cargo:warning=CUDA_HOME/include/cuda.h not found; building without NVDEC on Windows"),
+            }
+
             //let path = env::current_dir().unwrap();
             //println!("cargo:rustc-link-search=native={}/vaapi-windows/x64/lib", path.display());
             //println!("cargo:rustc-link-lib=dylib=va");

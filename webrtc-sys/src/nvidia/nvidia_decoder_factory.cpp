@@ -3,7 +3,14 @@
 #include <modules/video_coding/codecs/h264/include/h264.h>
 
 #include <cstdlib>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <memory>
 #include <mutex>
 
@@ -34,19 +41,32 @@ void LogNvdecDisabledByEnv() {
 
 constexpr char kSdpKeyNameCodecImpl[] = "implementation_name";
 constexpr char kCodecName[] = "NvCodec";
+#if defined(_WIN32)
+constexpr char kNvdecRuntimeLibrary[] = "nvcuvid.dll";
+#else
 constexpr char kNvdecRuntimeLibrary[] = "libnvcuvid.so.1";
+#endif
 
 namespace {
 
 bool IsNvdecRuntimeAvailable() {
+#if defined(_WIN32)
+  // Comes with the NVIDIA driver; the import itself is delay-loaded.
+  HMODULE hModule = LoadLibraryA(kNvdecRuntimeLibrary);
+#else
   void* hModule = dlopen(kNvdecRuntimeLibrary, RTLD_LAZY | RTLD_LOCAL);
+#endif
   if (!hModule) {
     RTC_LOG(LS_WARNING) << "NVDEC runtime library (" << kNvdecRuntimeLibrary
                         << ") not found, hardware decoding unavailable.";
     return false;
   }
 
+#if defined(_WIN32)
+  FreeLibrary(hModule);
+#else
   dlclose(hModule);
+#endif
   return true;
 }
 

@@ -30,8 +30,9 @@ namespace livekit_ffi {
 
 bool MfVideoDecoderFactory::IsSupported() {
   static bool supported = [] {
-    if (std::getenv("LK_DISABLE_MFDEC")) {
-      RTC_LOG(LS_INFO) << "MF decoder disabled by LK_DISABLE_MFDEC";
+    // Measured slower than FFmpeg (the MFT kept decoding on the CPU), so it is
+    // opt-in until that is solved.
+    if (!std::getenv("LK_ENABLE_MFDEC")) {
       return false;
     }
     MfH264Decoder probe;
