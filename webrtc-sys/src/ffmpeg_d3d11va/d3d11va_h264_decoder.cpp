@@ -142,9 +142,9 @@ Ff* Api() {
       return nullptr;
     }
     // FFmpeg's own messages go to the same trace (and nowhere else).
-    f.log_set_level(AV_LOG_WARNING);
+    f.log_set_level(AV_LOG_VERBOSE);
     f.log_set_callback([](void*, int level, const char* format, va_list args) {
-      if (level > AV_LOG_WARNING)
+      if (level > AV_LOG_VERBOSE)
         return;
       char line[512];
       vsnprintf(line, sizeof(line), format, args);
