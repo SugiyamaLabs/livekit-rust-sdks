@@ -19,17 +19,43 @@
 #include "api/audio/builtin_audio_processing_builder.h"
 #include "api/environment/environment_factory.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 
+#ifdef _WIN32
+// GetEnvironmentVariableA without windows.h: the CRT getenv() does not see
+// variables the host (e.g. .NET) sets after startup.
+extern "C" __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(
+    const char* name, char* buffer, unsigned long size);
+#endif
+
 namespace livekit_ffi {
+
+namespace {
+// LK_APM_MOBILE_MODE=1: echo cancellation with AECM (lighter, worse at
+// double talk) instead of AEC3. Read when each APM is created.
+bool MobileModeRequested() {
+#ifdef _WIN32
+  char value[8];
+  return GetEnvironmentVariableA("LK_APM_MOBILE_MODE", value, sizeof(value)) > 0 &&
+         value[0] == '1';
+#else
+  const char* value = std::getenv("LK_APM_MOBILE_MODE");
+  return value && value[0] == '1';
+#endif
+}
+}  // namespace
 
 AudioProcessingModule::AudioProcessingModule(
     const AudioProcessingConfig& config) {
   apm_ = webrtc::BuiltinAudioProcessingBuilder()
              .Build(webrtc::CreateEnvironment());
 
-  apm_->ApplyConfig(config.ToWebrtcConfig());
+  webrtc::AudioProcessing::Config webrtc_config = config.ToWebrtcConfig();
+  if (webrtc_config.echo_canceller.enabled && MobileModeRequested())
+    webrtc_config.echo_canceller.mobile_mode = true;
+  apm_->ApplyConfig(webrtc_config);
   apm_->Initialize();
 }
 
