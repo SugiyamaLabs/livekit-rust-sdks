@@ -72,6 +72,9 @@ class MfH264Decoder : public webrtc::VideoDecoder {
   // only take the DXVA path once they know the resolution).
   UINT32 hint_width_ = 0, hint_height_ = 0;
   int delivered_ = 0;
+  // Readback of DXVA surfaces: one staging texture, reused while the size holds.
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_;
+  SIZE staging_size_{};
   webrtc::DecodedImageCallback* callback_ = nullptr;
   webrtc::VideoFrameBufferPool buffer_pool_;
 };

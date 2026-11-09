@@ -231,6 +231,7 @@ int32_t MfH264Decoder::Release() {
     mft_.Reset();
   }
   manager_.Reset();
+  staging_.Reset();
   device_.Reset();
   buffer_pool_.Release();
   if (mf_started_) {
@@ -326,32 +327,63 @@ void MfH264Decoder::Deliver(IMFSample* sample, const webrtc::EncodedImage& input
   }
   delivered_++;
 
-  // On a DXGI buffer Lock2D reads the GPU surface back to memory.
-  BYTE* data = nullptr;
-  LONG pitch = 0;
-  ComPtr<IMF2DBuffer> buffer2d;
-  bool locked2d = SUCCEEDED(buffer.As(&buffer2d)) && SUCCEEDED(buffer2d->Lock2D(&data, &pitch));
-  DWORD length = 0;
-  if (!locked2d) {
-    if (FAILED(buffer->Lock(&data, nullptr, &length)))
-      return;
-    pitch = static_cast<LONG>(coded_width_);
-  }
-
   webrtc::scoped_refptr<webrtc::I420Buffer> i420 =
       buffer_pool_.CreateI420Buffer(static_cast<int>(width_), static_cast<int>(height_));
-  if (i420) {
-    const uint8_t* uv = data + static_cast<size_t>(pitch) * coded_height_;
-    libyuv::NV12ToI420(data, pitch, uv, pitch, i420->MutableDataY(), i420->StrideY(),
-                       i420->MutableDataU(), i420->StrideU(), i420->MutableDataV(),
-                       i420->StrideV(), static_cast<int>(width_), static_cast<int>(height_));
-  }
-  if (locked2d)
-    buffer2d->Unlock2D();
-  else
-    buffer->Unlock();
   if (!i420)
     return;
+
+  // GPU surface (DXVA): copy it into our own staging texture and map that. The
+  // generic Lock2D on a DXGI buffer costs several times more CPU per frame.
+  ComPtr<IMFDXGIBuffer> dxgi;
+  ComPtr<ID3D11Texture2D> surface;
+  UINT subresource = 0;
+  if (SUCCEEDED(buffer.As(&dxgi)) && SUCCEEDED(dxgi->GetResource(IID_PPV_ARGS(&surface))) &&
+      SUCCEEDED(dxgi->GetSubresourceIndex(&subresource))) {
+    D3D11_TEXTURE2D_DESC desc{};
+    surface->GetDesc(&desc);
+    if (!staging_ || staging_size_.cx != static_cast<LONG>(desc.Width) ||
+        staging_size_.cy != static_cast<LONG>(desc.Height)) {
+      D3D11_TEXTURE2D_DESC sd{};
+      sd.Width = desc.Width;
+      sd.Height = desc.Height;
+      sd.MipLevels = 1;
+      sd.ArraySize = 1;
+      sd.Format = desc.Format;
+      sd.SampleDesc.Count = 1;
+      sd.Usage = D3D11_USAGE_STAGING;
+      sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      staging_.Reset();
+      if (FAILED(device_->CreateTexture2D(&sd, nullptr, &staging_)))
+        return;
+      staging_size_ = {static_cast<LONG>(desc.Width), static_cast<LONG>(desc.Height)};
+    }
+    ComPtr<ID3D11DeviceContext> context;
+    device_->GetImmediateContext(&context);
+    context->CopySubresourceRegion(staging_.Get(), 0, 0, 0, 0, surface.Get(), subresource, nullptr);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+      return;
+    const uint8_t* y = static_cast<const uint8_t*>(mapped.pData);
+    const int pitch = static_cast<int>(mapped.RowPitch);
+    libyuv::NV12ToI420(y, pitch, y + static_cast<size_t>(pitch) * desc.Height, pitch,
+                       i420->MutableDataY(), i420->StrideY(), i420->MutableDataU(),
+                       i420->StrideU(), i420->MutableDataV(), i420->StrideV(),
+                       static_cast<int>(width_), static_cast<int>(height_));
+    context->Unmap(staging_.Get(), 0);
+  } else {
+    // System-memory sample (software path inside the MFT).
+    BYTE* data = nullptr;
+    DWORD length = 0;
+    if (FAILED(buffer->Lock(&data, nullptr, &length)))
+      return;
+    const int pitch = static_cast<int>(coded_width_);
+    libyuv::NV12ToI420(data, pitch, data + static_cast<size_t>(pitch) * coded_height_, pitch,
+                       i420->MutableDataY(), i420->StrideY(), i420->MutableDataU(),
+                       i420->StrideU(), i420->MutableDataV(), i420->StrideV(),
+                       static_cast<int>(width_), static_cast<int>(height_));
+    buffer->Unlock();
+  }
+
 
   auto builder = webrtc::VideoFrame::Builder()
                      .set_video_frame_buffer(i420)
