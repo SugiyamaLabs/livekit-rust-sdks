@@ -39,6 +39,10 @@
 #include "nvidia/nvidia_decoder_factory.h"
 #endif
 
+#if defined(USE_MF_VIDEO_DECODER)
+#include "mf/mf_decoder_factory.h"
+#endif
+
 namespace livekit_ffi {
 
 namespace {
@@ -82,6 +86,13 @@ VideoDecoderFactory::VideoDecoderFactory()
 #if defined(USE_NVIDIA_VIDEO_CODEC)
   if (webrtc::NvidiaVideoDecoderFactory::IsSupported()) {
     factories_.push_back(std::make_unique<webrtc::NvidiaVideoDecoderFactory>());
+  }
+#endif
+
+#if defined(USE_MF_VIDEO_DECODER)
+  // Windows: H.264 on the GPU (any vendor) through Media Foundation + D3D11.
+  if (MfVideoDecoderFactory::IsSupported()) {
+    factories_.push_back(std::make_unique<MfVideoDecoderFactory>());
   }
 #endif
 
