@@ -26,7 +26,7 @@ jobs:
             --disable-avformat --disable-avdevice --disable-avfilter \
             --disable-swscale --disable-swresample \
             --enable-decoder=h264 --enable-parser=h264 \
-            --enable-d3d11va --enable-hwaccel=h264_d3d11va \
+            --enable-d3d11va --enable-hwaccel=h264_d3d11va,h264_d3d11va2 \
             --extra-ldflags="-static-libgcc"
       - name: Build
         working-directory: ffmpeg
