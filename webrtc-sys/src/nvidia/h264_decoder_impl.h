@@ -44,6 +44,8 @@ class NvidiaH264DecoderImpl : public VideoDecoder {
   CUcontext cu_context_;
   std::unique_ptr<NvDecoder> decoder_;
   bool is_configured_decoder_;
+  // Size the NVDEC session was created for (from the SPS).
+  uint32_t max_width_ = 0, max_height_ = 0;
 
   Settings settings_;
 

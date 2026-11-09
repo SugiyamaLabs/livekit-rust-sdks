@@ -63,16 +63,11 @@ bool NvidiaH264DecoderImpl::Configure(const Settings& settings) {
     return false;
   }
 
-  // todo(kazuki): Max resolution is differred each architecture.
-  // Refer to the table in Video Decoder Capabilities.
-  // https://docs.nvidia.com/video-technologies/video-codec-sdk/nvdec-video-decoder-api-prog-guide
-  int maxWidth = 4096;
-  int maxHeight = 4096;
-
-  // bUseDeviceFrame: allocate in memory or cuda device memory
-  decoder_ = std::make_unique<NvDecoder>(
-      cu_context_, false, cudaVideoCodec_H264, true, false, nullptr, nullptr,
-      false, maxWidth, maxHeight);
+  // The decoder is created on the first SPS, sized to the stream: NVDEC
+  // allocates every decode surface at the max size, and 4096x4096 for each
+  // track cost hundreds of MB of video memory per participant.
+  decoder_.reset();
+  max_width_ = max_height_ = 0;
   return true;
 }
 
@@ -113,6 +108,22 @@ int32_t NvidiaH264DecoderImpl::Decode(const EncodedImage& input_image,
   std::optional<int> qp = h264_bitstream_parser_.GetLastSliceQp();
   std::optional<SpsParser::SpsState> sps = h264_bitstream_parser_.sps();
 
+  // First SPS, or a stream that grew past the size the decoder was made for
+  // (comes with a new SPS and a keyframe): (re)create it at that size.
+  if (sps && (!decoder_ || sps->width > max_width_ || sps->height > max_height_)) {
+    max_width_ = sps->width;
+    max_height_ = sps->height;
+    // bUseDeviceFrame=false: frames land in host memory for the I420 copy.
+    decoder_ = std::make_unique<NvDecoder>(
+        cu_context_, false, cudaVideoCodec_H264, true, false, nullptr, nullptr,
+        false, static_cast<int>(max_width_), static_cast<int>(max_height_));
+    is_configured_decoder_ = false;
+  }
+  if (!decoder_) {
+    // No SPS seen yet: ask for a keyframe.
+    return WEBRTC_VIDEO_CODEC_ERROR;
+  }
+
   if (is_configured_decoder_) {
     if (!sps ||
         sps.value().width != static_cast<uint32_t>(decoder_->GetWidth()) ||
@@ -121,12 +132,13 @@ int32_t NvidiaH264DecoderImpl::Decode(const EncodedImage& input_image,
     }
   }
 
-  int nFrameReturnd = 0;
-  do {
-    nFrameReturnd = decoder_->Decode(
-        input_image.data(), static_cast<int>(input_image.size()),
-        CUVID_PKT_TIMESTAMP, input_image.RtpTimestamp());
-  } while (nFrameReturnd == 0);
+  // WebRTC hands over whole access units: mark the end of the picture so the
+  // parser decodes it now. Without it the picture only completed on the next
+  // packet, and re-feeding the same packet until a frame came out decoded
+  // every frame twice.
+  int nFrameReturnd = decoder_->Decode(
+      input_image.data(), static_cast<int>(input_image.size()),
+      CUVID_PKT_ENDOFPICTURE, input_image.RtpTimestamp());
 
   is_configured_decoder_ = true;
 
