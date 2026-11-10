@@ -7,6 +7,8 @@ name: resenha-ffi-windows
 on:
   workflow_dispatch:
   push:
+    branches:
+      - windows-hw-decoder
     tags:
       - "resenha-ffi-*"
 
