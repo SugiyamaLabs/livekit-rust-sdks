@@ -28,6 +28,11 @@
 #include <mutex>
 #include <string>
 
+// Before the extern "C" block: hwcontext_d3d11va.h pulls in d3d11.h, whose C++
+// operators must not get C linkage.
+#include <d3d10.h>
+#include <d3d11.h>
+
 extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavutil/frame.h"
@@ -36,8 +41,6 @@ extern "C" {
 #include "libavutil/log.h"
 }
 
-#include <d3d10.h>
-#include <d3d11.h>
 #include <set>
 
 #include "api/video/i420_buffer.h"
