@@ -1,0 +1,90 @@
+# livekit_ffi.dll for Windows x64 with the D3D11VA H.264 decoder, plus the
+# minimal FFmpeg it loads (avcodec/avutil, LGPL). Resenha downloads the zip from
+# the release. A tag resenha-ffi-* publishes; a manual run only uploads the
+# artifact. Public repo: Actions minutes are free.
+name: resenha-ffi-windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "resenha-ffi-*"
+
+permissions:
+  contents: write
+
+jobs:
+  ffmpeg:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nasm
+      - name: Source
+        run: git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
+      - name: Configure
+        working-directory: ffmpeg
+        run: |
+          ./configure --prefix=$GITHUB_WORKSPACE/out \
+            --target-os=mingw32 --arch=x86_64 --cross-prefix=x86_64-w64-mingw32- \
+            --enable-shared --disable-static --disable-programs --disable-doc \
+            --disable-everything --disable-autodetect --disable-network \
+            --disable-avformat --disable-avdevice --disable-avfilter \
+            --disable-swscale --disable-swresample \
+            --enable-decoder=h264 --enable-parser=h264 \
+            --enable-d3d11va --enable-hwaccel=h264_d3d11va,h264_d3d11va2 \
+            --extra-ldflags="-static-libgcc"
+      - name: Build
+        working-directory: ffmpeg
+        run: make -j"$(nproc)" install && cp COPYING.LGPLv2.1 $GITHUB_WORKSPACE/out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg
+          path: out
+
+  ffi:
+    needs: ffmpeg
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-pc-windows-msvc
+          cache: false
+          rustflags: ""
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.2"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg
+          path: ffmpeg
+      - name: Build
+        env:
+          FFMPEG_D3D11VA_HOME: ${{ github.workspace }}\ffmpeg
+        run: |
+          cd livekit-ffi
+          cargo rustc --lib --crate-type cdylib --release --target x86_64-pc-windows-msvc
+      - name: Package
+        run: |
+          $out = "resenha-ffi-windows-x64"
+          New-Item -ItemType Directory $out | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\livekit_ffi.dll $out
+          Copy-Item ffmpeg\bin\avcodec-*.dll, ffmpeg\bin\avutil-*.dll $out
+          Copy-Item ffmpeg\COPYING.LGPLv2.1 "$out\FFMPEG-LICENSE.txt"
+          Copy-Item LICENSE "$out\LIVEKIT-LICENSE.txt"
+          Copy-Item livekit-ffi\WEBRTC_LICENSE.md "$out\WEBRTC-LICENSE.md"
+          "FFmpeg n7.1 (https://github.com/FFmpeg/FFmpeg/tree/n7.1), built by .github/workflows/resenha-ffi-windows.yml in https://github.com/${{ github.repository }} at ${{ github.sha }}." | Set-Content "$out\SOURCES.txt"
+          Compress-Archive -Path "$out\*" -DestinationPath "$out.zip"
+          Get-ChildItem $out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resenha-ffi-windows-x64
+          path: resenha-ffi-windows-x64.zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" resenha-ffi-windows-x64.zip --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes "livekit_ffi.dll (Windows x64, D3D11VA) + FFmpeg avcodec/avutil (LGPL)."

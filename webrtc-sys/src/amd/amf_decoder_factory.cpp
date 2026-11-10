@@ -29,7 +29,8 @@ namespace livekit_ffi {
 
 bool AmfVideoDecoderFactory::IsSupported() {
   static bool supported = [] {
-    if (std::getenv("LK_DISABLE_AMFDEC"))
+    // Opt-in until tested on AMD hardware; D3D11VA already covers AMD.
+    if (!std::getenv("LK_ENABLE_AMFDEC"))
       return false;
     if (!AmfH264Decoder::Factory())
       return false;  // no AMD driver

@@ -83,6 +83,7 @@ class D3d11vaH264Decoder : public webrtc::VideoDecoder {
   AVFrame* frame_ = nullptr;
   AVFrame* download_ = nullptr;
   int traced_frames_ = 0;
+  int profile_ = -1;  // AV_PROFILE_H264_*, from the decoded SPS
   webrtc::DecodedImageCallback* callback_ = nullptr;
   webrtc::VideoFrameBufferPool buffer_pool_;
 };
