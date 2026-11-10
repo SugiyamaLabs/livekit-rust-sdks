@@ -148,6 +148,13 @@ macro_rules! impl_to_argb {
 
 #[allow(unused_unsafe)]
 impl NativeBuffer {
+    /// Decoded straight into a D3D11 texture (Windows D3D11VA zero-copy):
+    /// (ID3D11Texture2D*, array slice).
+    pub fn d3d11_texture(&self) -> Option<(u64, u32)> {
+        let (mut texture, mut index) = (0u64, 0u32);
+        self.sys_handle.d3d11_texture(&mut texture, &mut index).then_some((texture, index))
+    }
+
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub unsafe fn from_cv_pixel_buffer(
         cv_pixel_buffer: *mut std::ffi::c_void,

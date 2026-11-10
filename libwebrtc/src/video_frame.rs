@@ -591,6 +591,13 @@ pub mod native {
     }
 
     impl NativeBuffer {
+        /// Decoded straight into a D3D11 texture by the Windows D3D11VA decoder
+        /// running on the host's device: (ID3D11Texture2D*, array slice). The
+        /// texture stays valid while this buffer is alive.
+        pub fn d3d11_texture(&self) -> Option<(u64, u32)> {
+            self.handle.d3d11_texture()
+        }
+
         /// Creates a `NativeBuffer` from a `CVPixelBufferRef` pointer.
         ///
         /// This function does not bump the reference count of the pixel buffer.

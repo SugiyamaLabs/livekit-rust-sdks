@@ -67,6 +67,10 @@ class VideoFrameBuffer {
 
   std::unique_ptr<I420Buffer> to_i420() const;
 
+  // Decoded straight into a D3D11 texture (Windows D3D11VA zero-copy): the
+  // texture (ID3D11Texture2D*) and its array slice. false for any other buffer.
+  bool d3d11_texture(uint64_t& texture, uint32_t& index) const;
+
   // Requires ownership
   std::unique_ptr<I420Buffer> get_i420();
   std::unique_ptr<I420ABuffer> get_i420a();

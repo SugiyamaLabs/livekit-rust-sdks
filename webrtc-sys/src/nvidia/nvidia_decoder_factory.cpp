@@ -180,6 +180,10 @@ bool NvidiaVideoDecoderFactory::IsSupported() {
   }
 
 #if defined(_WIN32)
+  // Opt-in on Windows: the CUDA context costs ~60-70 MB of host memory, more
+  // than the CPU it saves is worth by default (D3D11VA zero-copy is the default).
+  if (!std::getenv("LK_ENABLE_NVDEC"))
+    return false;
   // Only check that the driver libraries exist; cuInit waits for a large stream.
   if (HMODULE cuda = LoadLibraryA("nvcuda.dll")) {
     FreeLibrary(cuda);

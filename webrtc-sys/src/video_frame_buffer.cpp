@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#if defined(USE_D3D11VA_VIDEO_DECODER)
+#include "ffmpeg_d3d11va/d3d11va_h264_decoder.h"
+#endif
 #include "livekit/video_frame_buffer.h"
 
 #include "api/make_ref_counted.h"
@@ -39,6 +42,16 @@ unsigned int VideoFrameBuffer::height() const {
 
 std::unique_ptr<I420Buffer> VideoFrameBuffer::to_i420() const {
   return std::make_unique<I420Buffer>(buffer_->ToI420());
+}
+
+bool VideoFrameBuffer::d3d11_texture(uint64_t& texture, uint32_t& index) const {
+#if defined(USE_D3D11VA_VIDEO_DECODER)
+  return D3d11TextureOf(buffer_.get(), &texture, &index);
+#else
+  (void)texture;
+  (void)index;
+  return false;
+#endif
 }
 
 // const_cast is valid here because we take the ownership on the rust side

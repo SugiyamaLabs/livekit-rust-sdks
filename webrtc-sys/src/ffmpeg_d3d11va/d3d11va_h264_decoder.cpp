@@ -32,8 +32,13 @@ extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavutil/frame.h"
 #include "libavutil/hwcontext.h"
+#include "libavutil/hwcontext_d3d11va.h"
 #include "libavutil/log.h"
 }
+
+#include <d3d10.h>
+#include <d3d11.h>
+#include <set>
 
 #include "api/video/i420_buffer.h"
 #include "api/video/video_frame.h"
@@ -85,9 +90,33 @@ struct Ff {
   decltype(&av_buffer_ref) buffer_ref;
   decltype(&av_log_set_callback) log_set_callback;
   decltype(&av_log_set_level) log_set_level;
+  decltype(&av_hwdevice_ctx_alloc) device_alloc;
+  decltype(&av_hwdevice_ctx_init) device_init;
+  decltype(&av_frame_clone) frame_clone;
   // One D3D11VA device shared by every decoder.
   AVBufferRef* device = nullptr;
+  // The device is the app's own (LK_D3D11_DEVICE): decoded textures are handed
+  // over as they are (zero-copy) instead of downloaded.
+  bool app_device = false;
 };
+
+// LK_D3D11_DEVICE=<ID3D11Device* in decimal>: the host's device (same process),
+// which must have video support and multithread protection on.
+ID3D11Device* AppDevice() {
+  char value[32];
+  if (GetEnvironmentVariableA("LK_D3D11_DEVICE", value, sizeof(value)) == 0)
+    return nullptr;
+  return reinterpret_cast<ID3D11Device*>(static_cast<uintptr_t>(_strtoui64(value, nullptr, 10)));
+}
+
+// FFmpeg locks around its context calls; the host locks around its own with the
+// same ID3D10Multithread, so a decode and a draw never interleave.
+void LockDevice(void* ctx) {
+  static_cast<ID3D10Multithread*>(ctx)->Enter();
+}
+void UnlockDevice(void* ctx) {
+  static_cast<ID3D10Multithread*>(ctx)->Leave();
+}
 
 HMODULE LoadNextToUs(const wchar_t* name) {
   HMODULE self = nullptr;
@@ -136,7 +165,10 @@ Ff* Api() {
               Resolve(util, "av_hwdevice_ctx_create", f.device_create) &&
               Resolve(util, "av_buffer_ref", f.buffer_ref) &&
               Resolve(util, "av_log_set_callback", f.log_set_callback) &&
-              Resolve(util, "av_log_set_level", f.log_set_level);
+              Resolve(util, "av_log_set_level", f.log_set_level) &&
+              Resolve(util, "av_hwdevice_ctx_alloc", f.device_alloc) &&
+              Resolve(util, "av_hwdevice_ctx_init", f.device_init) &&
+              Resolve(util, "av_frame_clone", f.frame_clone);
     if (!ok) {
       RTC_LOG(LS_WARNING) << "D3D11VA: FFmpeg DLLs missing an entry point";
       return nullptr;
@@ -150,8 +182,25 @@ Ff* Api() {
       vsnprintf(line, sizeof(line), format, args);
       Trace("ffmpeg[%d]: %s", level, line);
     });
-    const int created = f.device_create(&f.device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
-    Trace("entry points %d, device_create %d", ok ? 1 : 0, created);
+    int created = -1;
+    if (ID3D11Device* device = AppDevice()) {
+      // Decode on the host's device: its renderer can draw the texture as is.
+      ID3D10Multithread* mt = nullptr;
+      if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D10Multithread), reinterpret_cast<void**>(&mt)))) {
+        f.device = f.device_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+        auto* hw = static_cast<AVD3D11VADeviceContext*>(reinterpret_cast<AVHWDeviceContext*>(f.device->data)->hwctx);
+        device->AddRef();
+        hw->device = device;
+        hw->lock = LockDevice;
+        hw->unlock = UnlockDevice;
+        hw->lock_ctx = mt;  // keeps the reference for the life of the process
+        created = f.device_init(f.device);
+        f.app_device = created >= 0;
+      }
+    }
+    if (created < 0)
+      created = f.device_create(&f.device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
+    Trace("entry points %d, device %d (app device %d)", ok ? 1 : 0, created, f.app_device ? 1 : 0);
     if (created < 0) {
       RTC_LOG(LS_INFO) << "D3D11VA: no D3D11 video device";
       return nullptr;
@@ -175,6 +224,58 @@ AVPixelFormat PickD3d11(AVCodecContext*, const AVPixelFormat* formats) {
 }
 
 }  // namespace
+
+namespace {
+std::mutex g_live_mutex;
+std::set<const webrtc::VideoFrameBuffer*> g_live;  // live D3d11TextureBuffers
+}  // namespace
+
+D3d11TextureBuffer::D3d11TextureBuffer(AVFrame* frame) : frame_(frame) {
+  std::lock_guard<std::mutex> lock(g_live_mutex);
+  g_live.insert(this);
+}
+
+D3d11TextureBuffer::~D3d11TextureBuffer() {
+  {
+    std::lock_guard<std::mutex> lock(g_live_mutex);
+    g_live.erase(this);
+  }
+  if (Ff* ff = Api())
+    ff->frame_free(&frame_);
+}
+
+int D3d11TextureBuffer::width() const {
+  return frame_->width;
+}
+
+int D3d11TextureBuffer::height() const {
+  return frame_->height;
+}
+
+webrtc::scoped_refptr<webrtc::I420BufferInterface> D3d11TextureBuffer::ToI420() {
+  // Rare (someone inside WebRTC wants pixels): download this one frame.
+  Ff* ff = Api();
+  webrtc::scoped_refptr<webrtc::I420Buffer> i420 = webrtc::I420Buffer::Create(width(), height());
+  AVFrame* nv12 = ff ? ff->frame_alloc() : nullptr;
+  if (nv12 && ff->transfer(nv12, frame_, 0) >= 0) {
+    libyuv::NV12ToI420(nv12->data[0], nv12->linesize[0], nv12->data[1], nv12->linesize[1],
+                       i420->MutableDataY(), i420->StrideY(), i420->MutableDataU(), i420->StrideU(),
+                       i420->MutableDataV(), i420->StrideV(), width(), height());
+  }
+  if (nv12)
+    ff->frame_free(&nv12);
+  return i420;
+}
+
+bool D3d11TextureOf(const webrtc::VideoFrameBuffer* buffer, uint64_t* texture, uint32_t* index) {
+  std::lock_guard<std::mutex> lock(g_live_mutex);
+  if (!g_live.count(buffer))
+    return false;
+  const AVFrame* frame = static_cast<const D3d11TextureBuffer*>(buffer)->frame();
+  *texture = reinterpret_cast<uintptr_t>(frame->data[0]);
+  *index = static_cast<uint32_t>(reinterpret_cast<intptr_t>(frame->data[1]));
+  return true;
+}
 
 bool D3d11vaH264Decoder::IsAvailable() {
   return Api() != nullptr;
@@ -285,7 +386,20 @@ int32_t D3d11vaH264Decoder::Decode(const webrtc::EncodedImage& input_image,
       Trace("frame %d: format %d, %dx%d", traced_frames_, frame_->format, frame_->width, frame_->height);
       traced_frames_++;
     }
-    if (frame_->format == AV_PIX_FMT_D3D11) {
+    if (frame_->format == AV_PIX_FMT_D3D11 && ff->app_device) {
+      // Zero-copy: the frame keeps its decoder surface alive until the host
+      // draws it and releases the buffer.
+      if (AVFrame* held = ff->frame_clone(frame_)) {
+        auto buffer = webrtc::make_ref_counted<D3d11TextureBuffer>(held);
+        auto builder = webrtc::VideoFrame::Builder()
+                           .set_video_frame_buffer(buffer)
+                           .set_timestamp_rtp(static_cast<uint32_t>(frame_->pts));
+        if (input_image.ColorSpace())
+          builder.set_color_space(*input_image.ColorSpace());
+        webrtc::VideoFrame out = builder.build();
+        callback_->Decoded(out, std::nullopt, std::nullopt);
+      }
+    } else if (frame_->format == AV_PIX_FMT_D3D11) {
       // GPU surface → NV12 in memory (FFmpeg keeps one staging texture).
       if (ff->transfer(download_, frame_, 0) >= 0) {
         download_->pts = frame_->pts;
@@ -329,7 +443,10 @@ void D3d11vaH264Decoder::Deliver(AVFrame* frame, const webrtc::EncodedImage& inp
 }
 
 bool D3d11vaVideoDecoderFactory::IsSupported() {
-  static bool supported = D3d11vaH264Decoder::IsAvailable();
+  // Without zero-copy the download back to memory cost more CPU than FFmpeg on
+  // the CPU (measured): only with the host's device, or when asked for.
+  static bool supported = (AppDevice() != nullptr || std::getenv("LK_ENABLE_D3D11VA")) &&
+                          D3d11vaH264Decoder::IsAvailable();
   Trace("factory: supported %d", supported ? 1 : 0);
   return supported;
 }

@@ -53,6 +53,9 @@ pub mod ffi {
         /// If the buffer type is I420, the buffer must be cloned before
         unsafe fn to_i420(self: &VideoFrameBuffer) -> UniquePtr<I420Buffer>;
 
+        /// Decoded straight into a D3D11 texture (Windows D3D11VA zero-copy).
+        fn d3d11_texture(self: &VideoFrameBuffer, texture: &mut u64, index: &mut u32) -> bool;
+
         /// # SAFETY
         /// The functions require ownership
         unsafe fn get_i420(self: Pin<&mut VideoFrameBuffer>) -> UniquePtr<I420Buffer>;

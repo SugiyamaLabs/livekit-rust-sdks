@@ -37,6 +37,9 @@ pub struct FfiVideoStream {
 
 impl FfiHandle for FfiVideoStream {}
 
+/// `VideoBufferInfo.components[0].size` of a frame handed over as a D3D11 texture.
+pub const D3D11_TEXTURE_MARKER: u32 = 0xD3D11;
+
 fn frame_metadata_to_proto(metadata: Option<FrameMetadata>) -> Option<proto::FrameMetadata> {
     metadata.map(|metadata| proto::FrameMetadata {
         user_timestamp: metadata.user_timestamp,
@@ -156,13 +159,37 @@ impl FfiVideoStream {
                     let metadata = frame_metadata_to_proto(frame.frame_metadata);
                     let timestamp_us = frame.timestamp_us;
                     let rotation = proto::VideoRotation::from(frame.rotation).into();
-                    let Ok((buffer, info)) = colorcvt::to_video_buffer_info(frame.buffer, dst_type, normalize_stride) else {
-                        log::error!("video stream failed to convert video frame to {:?}", dst_type);
-                        continue;
-                    };
-
+                    // Windows D3D11VA zero-copy: a frame decoded into the host's own D3D11
+                    // texture goes out as that texture, unconverted. Old clients still parse
+                    // it: NV12 with no data pointer, one component carrying the texture
+                    // (data_ptr), its array slice (stride) and D3D11_TEXTURE_MARKER (size).
+                    // The buffer itself is the handle, so the surface stays the frame's until
+                    // the client drops it.
+                    let d3d11 = frame.buffer.as_native().and_then(|native| native.d3d11_texture());
                     let handle_id = server.next_id();
-                    server.store_handle(handle_id, buffer);
+                    let info = if let Some((texture, index)) = d3d11 {
+                        let info = proto::VideoBufferInfo {
+                            r#type: proto::VideoBufferType::Nv12 as i32,
+                            width: frame.buffer.width(),
+                            height: frame.buffer.height(),
+                            data_ptr: 0,
+                            stride: None,
+                            components: vec![proto::video_buffer_info::ComponentInfo {
+                                data_ptr: texture,
+                                stride: index,
+                                size: D3D11_TEXTURE_MARKER,
+                            }],
+                        };
+                        server.store_handle(handle_id, frame.buffer);
+                        info
+                    } else {
+                        let Ok((buffer, info)) = colorcvt::to_video_buffer_info(frame.buffer, dst_type, normalize_stride) else {
+                            log::error!("video stream failed to convert video frame to {:?}", dst_type);
+                            continue;
+                        };
+                        server.store_handle(handle_id, buffer);
+                        info
+                    };
 
 
                     if let Err(err) = server.send_event(

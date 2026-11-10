@@ -24,6 +24,7 @@
 #include "api/video_codecs/sdp_video_format.h"
 #include "api/video_codecs/video_decoder.h"
 #include "api/video_codecs/video_decoder_factory.h"
+#include "api/video/video_frame_buffer.h"
 #include "common_video/include/video_frame_buffer_pool.h"
 
 struct AVCodecContext;
@@ -31,6 +32,27 @@ struct AVFrame;
 struct AVPacket;
 
 namespace livekit_ffi {
+
+// A frame decoded into a D3D11VA surface, handed over without copying (the
+// host decodes on its own device and draws the surface directly). Holds the
+// FFmpeg frame, so the decoder does not reuse the surface until it is gone.
+class D3d11TextureBuffer : public webrtc::VideoFrameBuffer {
+ public:
+  explicit D3d11TextureBuffer(AVFrame* frame);
+  ~D3d11TextureBuffer() override;
+  Type type() const override { return Type::kNative; }
+  int width() const override;
+  int height() const override;
+  webrtc::scoped_refptr<webrtc::I420BufferInterface> ToI420() override;
+  const AVFrame* frame() const { return frame_; }
+
+ private:
+  AVFrame* frame_;
+};
+
+// texture = ID3D11Texture2D*, index = its array slice; false when the buffer is
+// not a D3d11TextureBuffer.
+bool D3d11TextureOf(const webrtc::VideoFrameBuffer* buffer, uint64_t* texture, uint32_t* index);
 
 // H.264 decoded on the GPU through D3D11VA (any vendor), using a minimal
 // FFmpeg build (avcodec/avutil, LGPL) loaded at runtime from next to
