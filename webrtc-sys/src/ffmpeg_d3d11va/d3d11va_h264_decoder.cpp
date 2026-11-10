@@ -30,7 +30,7 @@
 
 // Before the extern "C" block: hwcontext_d3d11va.h pulls in d3d11.h, whose C++
 // operators must not get C linkage.
-#include <d3d10.h>
+#include <d3d10_1.h>  // (includes d3d10.h, for ID3D10Multithread; d3d10_1 must come first)
 #include <d3d11.h>
 
 extern "C" {
