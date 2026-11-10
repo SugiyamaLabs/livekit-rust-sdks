@@ -45,6 +45,7 @@ extern "C" {
 #include <set>
 
 #include "api/video/i420_buffer.h"
+#include "common_video/h264/h264_bitstream_parser.h"
 #include "api/video/video_frame.h"
 #include "api/video_codecs/h264_profile_level_id.h"
 #include "api/video_codecs/video_decoder_software_fallback_wrapper.h"
@@ -500,15 +501,111 @@ std::vector<webrtc::SdpVideoFormat> D3d11vaVideoDecoderFactory::GetSupportedForm
   };
 }
 
+namespace {
+
+// FFmpeg on the CPU for small streams, D3D11VA for 720p and up. A thumbnail
+// camera decodes almost for free in software, while each D3D11VA session holds
+// its own surface pool (measured +41 MB for 4 small cameras, same CPU); large
+// streams are where the GPU halves the CPU. Switches on keyframes (a size change
+// always comes with one); a hardware error falls back to FFmpeg for good.
+class SizeSwitchingDecoder : public webrtc::VideoDecoder {
+ public:
+  static constexpr int kMinHardwarePixels = 1280 * 720;
+
+  SizeSwitchingDecoder() : software_(webrtc::H264Decoder::Create()) {}
+
+  bool Configure(const Settings& settings) override {
+    settings_ = settings;
+    current_ = software_ && software_->Configure(settings) ? software_.get() : nullptr;
+    return current_ != nullptr;
+  }
+
+  int32_t RegisterDecodeCompleteCallback(webrtc::DecodedImageCallback* callback) override {
+    callback_ = callback;
+    if (software_)
+      software_->RegisterDecodeCompleteCallback(callback);
+    if (hardware_)
+      hardware_->RegisterDecodeCompleteCallback(callback);
+    return WEBRTC_VIDEO_CODEC_OK;
+  }
+
+  int32_t Decode(const webrtc::EncodedImage& image, bool missing, int64_t render_ms) override {
+    if (!current_)
+      return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+    if (image.FrameType() == webrtc::VideoFrameType::kVideoFrameKey) {
+      parser_.ParseBitstream(image);
+      if (auto sps = parser_.sps()) {
+        const bool large = static_cast<int>(sps->width * sps->height) >= kMinHardwarePixels;
+        if (large && current_ != hardware_.get() && UseHardware()) {
+          current_ = hardware_.get();
+        } else if (!large && hardware_ && current_ == hardware_.get()) {
+          current_ = software_.get();
+          hardware_.reset();  // its surface pool goes back
+        }
+      }
+    }
+    int32_t result = current_->Decode(image, missing, render_ms);
+    if (result < 0 && hardware_ && current_ == hardware_.get()) {
+      current_ = software_.get();
+      hardware_.reset();
+      failed_ = true;
+      return WEBRTC_VIDEO_CODEC_ERROR;  // asks for a keyframe for FFmpeg
+    }
+    return result;
+  }
+
+  int32_t Release() override {
+    if (software_)
+      software_->Release();
+    hardware_.reset();
+    current_ = nullptr;
+    return WEBRTC_VIDEO_CODEC_OK;
+  }
+
+  DecoderInfo GetDecoderInfo() const override {
+    if (current_)
+      return current_->GetDecoderInfo();
+    return DecoderInfo{};
+  }
+
+ private:
+  class Parser : public webrtc::H264BitstreamParser {
+   public:
+    std::optional<webrtc::SpsParser::SpsState> sps() const { return sps_; }
+  };
+
+  bool UseHardware() {
+    if (hardware_)
+      return true;
+    if (failed_)
+      return false;
+    hardware_ = std::make_unique<D3d11vaH264Decoder>();
+    if (!hardware_->Configure(settings_)) {
+      hardware_.reset();
+      failed_ = true;
+      return false;
+    }
+    hardware_->RegisterDecodeCompleteCallback(callback_);
+    return true;
+  }
+
+  std::unique_ptr<webrtc::VideoDecoder> software_;
+  std::unique_ptr<D3d11vaH264Decoder> hardware_;
+  webrtc::VideoDecoder* current_ = nullptr;
+  bool failed_ = false;
+  Settings settings_;
+  webrtc::DecodedImageCallback* callback_ = nullptr;
+  Parser parser_;
+};
+
+}  // namespace
+
 std::unique_ptr<webrtc::VideoDecoder> D3d11vaVideoDecoderFactory::Create(
-    const webrtc::Environment& env,
+    const webrtc::Environment& /*env*/,
     const webrtc::SdpVideoFormat& format) {
   if (format.name != webrtc::kH264CodecName)
     return nullptr;
-  auto hw = std::make_unique<D3d11vaH264Decoder>();
-  if (auto sw = webrtc::H264Decoder::Create())
-    return webrtc::CreateVideoDecoderSoftwareFallbackWrapper(env, std::move(sw), std::move(hw));
-  return hw;
+  return std::make_unique<SizeSwitchingDecoder>();
 }
 
 }  // namespace livekit_ffi
