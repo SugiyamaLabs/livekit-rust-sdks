@@ -310,7 +310,17 @@ bool D3d11TextureOf(const webrtc::VideoFrameBuffer* buffer, uint64_t* texture, u
     return false;
   const AVFrame* frame = static_cast<const D3d11TextureBuffer*>(buffer)->frame();
   *texture = reinterpret_cast<uintptr_t>(frame->data[0]);
-  *index = static_cast<uint32_t>(reinterpret_cast<intptr_t>(frame->data[1]));
+  // Low 16 bits: array slice. Above them, how the host must convert the
+  // surface to RGB (the stream's VUI): bit 16 BT.709 matrix, bit 17 full range,
+  // bit 18 the stream said which matrix (else the host keeps its default).
+  uint32_t color = 0;
+  if (frame->colorspace == AVCOL_SPC_BT709)
+    color |= 1u << 16;
+  if (frame->color_range == AVCOL_RANGE_JPEG)
+    color |= 1u << 17;
+  if (frame->colorspace != AVCOL_SPC_UNSPECIFIED)
+    color |= 1u << 18;
+  *index = (static_cast<uint32_t>(reinterpret_cast<intptr_t>(frame->data[1])) & 0xFFFF) | color;
   return true;
 }
 
@@ -327,12 +337,22 @@ D3d11vaH264Decoder::~D3d11vaH264Decoder() {
 webrtc::VideoDecoder::DecoderInfo D3d11vaH264Decoder::GetDecoderInfo() const {
   DecoderInfo info;
   // The profile the stream really uses (the SDP can say Baseline and carry High).
+  // And its colour, as the stream's VUI declares it.
+  std::string name = "FFmpeg D3D11VA H264";
   switch (profile_) {
-    case 66: case 578: info.implementation_name = "FFmpeg D3D11VA H264 Baseline"; break;
-    case 77: info.implementation_name = "FFmpeg D3D11VA H264 Main"; break;
-    case 100: info.implementation_name = "FFmpeg D3D11VA H264 High"; break;
-    default: info.implementation_name = "FFmpeg D3D11VA H264"; break;
+    case 66: case 578: name += " Baseline"; break;
+    case 77: name += " Main"; break;
+    case 100: name += " High"; break;
   }
+  switch (colorspace_) {
+    case AVCOL_SPC_BT709: name += " BT.709"; break;
+    case AVCOL_SPC_BT470BG: case AVCOL_SPC_SMPTE170M: name += " BT.601"; break;
+    case AVCOL_SPC_UNSPECIFIED: name += " cor?"; break;
+    default: name += " cor " + std::to_string(colorspace_); break;
+  }
+  if (full_range_)
+    name += " full";
+  info.implementation_name = name;
   info.is_hardware_accelerated = true;
   return info;
 }
@@ -426,6 +446,8 @@ int32_t D3d11vaH264Decoder::Decode(const webrtc::EncodedImage& input_image,
       return WEBRTC_VIDEO_CODEC_ERROR;
     }
     profile_ = context_->profile;
+    colorspace_ = frame_->colorspace;
+    full_range_ = frame_->color_range == AVCOL_RANGE_JPEG;
     if (traced_frames_ < 3) {
       Trace("frame %d: format %d, %dx%d", traced_frames_, frame_->format, frame_->width, frame_->height);
       traced_frames_++;

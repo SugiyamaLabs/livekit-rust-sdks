@@ -84,6 +84,8 @@ class D3d11vaH264Decoder : public webrtc::VideoDecoder {
   AVFrame* download_ = nullptr;
   int traced_frames_ = 0;
   int profile_ = -1;  // AV_PROFILE_H264_*, from the decoded SPS
+  int colorspace_ = 2;  // AVCOL_SPC_*, from the VUI (2 = unspecified)
+  bool full_range_ = false;
   webrtc::DecodedImageCallback* callback_ = nullptr;
   webrtc::VideoFrameBufferPool buffer_pool_;
 };
