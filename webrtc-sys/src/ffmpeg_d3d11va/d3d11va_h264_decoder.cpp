@@ -41,6 +41,7 @@ extern "C" {
 #include "libavutil/log.h"
 }
 
+#include <algorithm>
 #include <set>
 
 #include "api/video/i420_buffer.h"
@@ -96,6 +97,9 @@ struct Ff {
   decltype(&av_hwdevice_ctx_alloc) device_alloc;
   decltype(&av_hwdevice_ctx_init) device_init;
   decltype(&av_frame_clone) frame_clone;
+  decltype(&avcodec_get_hw_frames_parameters) frames_params;
+  decltype(&av_hwframe_ctx_init) frames_init;
+  decltype(&av_buffer_unref) buffer_unref;
   // One D3D11VA device shared by every decoder.
   AVBufferRef* device = nullptr;
   // The device is the app's own (LK_D3D11_DEVICE): decoded textures are handed
@@ -171,7 +175,10 @@ Ff* Api() {
               Resolve(util, "av_log_set_level", f.log_set_level) &&
               Resolve(util, "av_hwdevice_ctx_alloc", f.device_alloc) &&
               Resolve(util, "av_hwdevice_ctx_init", f.device_init) &&
-              Resolve(util, "av_frame_clone", f.frame_clone);
+              Resolve(util, "av_frame_clone", f.frame_clone) &&
+              Resolve(codec, "avcodec_get_hw_frames_parameters", f.frames_params) &&
+              Resolve(util, "av_hwframe_ctx_init", f.frames_init) &&
+              Resolve(util, "av_buffer_unref", f.buffer_unref);
     if (!ok) {
       RTC_LOG(LS_WARNING) << "D3D11VA: FFmpeg DLLs missing an entry point";
       return nullptr;
@@ -213,10 +220,36 @@ Ff* Api() {
   return api;
 }
 
-AVPixelFormat PickD3d11(AVCodecContext*, const AVPixelFormat* formats) {
+// Surface pool sized to the stream. FFmpeg reserves ~20 per decoder (room for
+// H.264's 16 references); WebRTC streams use 1-2, and every extra surface is
+// memory for nothing (measured ~60 MB over 6 tracks). References from the SPS
+// plus room for the frames being shown, never more than FFmpeg's own count.
+void SizeFramePool(AVCodecContext* ctx) {
+  Ff* ff = Api();
+  if (!ff)
+    return;
+  AVBufferRef* frames = nullptr;
+  if (ff->frames_params(ctx, ctx->hw_device_ctx, AV_PIX_FMT_D3D11, &frames) < 0 || !frames)
+    return;
+  auto* fc = reinterpret_cast<AVHWFramesContext*>(frames->data);
+  const int stock = fc->initial_pool_size;
+  const int want = std::max(8, ctx->refs + 6);
+  if (want < stock)
+    fc->initial_pool_size = want;
+  if (ff->frames_init(frames) < 0) {
+    ff->buffer_unref(&frames);
+    return;  // FFmpeg makes its own pool
+  }
+  ff->buffer_unref(&ctx->hw_frames_ctx);
+  ctx->hw_frames_ctx = frames;
+  Trace("pool: %d surfaces (FFmpeg default %d, refs %d)", fc->initial_pool_size, stock, ctx->refs);
+}
+
+AVPixelFormat PickD3d11(AVCodecContext* ctx, const AVPixelFormat* formats) {
   for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; f++) {
     if (*f == AV_PIX_FMT_D3D11) {
       Trace("get_format: D3D11");
+      SizeFramePool(ctx);
       return *f;
     }
   }
